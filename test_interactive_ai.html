@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>测试交互式AI</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        .waiting { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+        input, textarea, button { width: 100%; padding: 10px; margin: 5px 0; }
+        button { background: #007bff; color: white; border: none; border-radius: 3px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        .response { background: #f8f9fa; padding: 15px; border: 1px solid #dee2e6; border-radius: 5px; margin: 10px 0; }
+        pre { background: #e9ecef; padding: 10px; border-radius: 3px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>交互式AI测试页面</h1>
+        
+        <div class="status info">
+            <strong>说明：</strong>这个页面用于测试WebSSH的交互式AI功能是否正常工作。
+        </div>
+
+        <div id="connectionStatus" class="status error">
+            <strong>状态：</strong>未连接到WebSSH服务
+        </div>
+
+        <div>
+            <label for="sessionId">会话ID（需要先在WebSSH中连接一个主机）：</label>
+            <input type="text" id="sessionId" placeholder="输入SSH会话ID">
+        </div>
+
+        <div>
+            <label for="userMessage">用户消息：</label>
+            <textarea id="userMessage" rows="3" placeholder="输入您的需求，例如：查看系统资源使用情况"></textarea>
+        </div>
+
+        <div>
+            <button onclick="sendUserRequest()" id="sendBtn">发送用户请求</button>
+        </div>
+
+        <div>
+            <label for="executionResult">执行结果反馈：</label>
+            <textarea id="executionResult" rows="3" placeholder="输入命令执行结果，例如：执行成功，输出显示CPU使用率20%"></textarea>
+        </div>
+
+        <div>
+            <button onclick="sendExecutionResult()" id="feedbackBtn" disabled>提交执行结果</button>
+        </div>
+
+        <div id="responses"></div>
+    </div>
+
+    <script>
+        let currentCommandId = 0;
+        let waitingExecution = false;
+
+        // 检查服务连接状态
+        async function checkConnection() {
+            try {
+                const response = await fetch('http://localhost:8899/api/ai/providers');
+                if (response.status === 401) {
+                    document.getElementById('connectionStatus').innerHTML = 
+                        '<strong>状态：</strong>WebSSH服务运行中，但需要登录认证（这是正常的）';
+                    document.getElementById('connectionStatus').className = 'status success';
+                } else {
+                    document.getElementById('connectionStatus').innerHTML = 
+                        '<strong>状态：</strong>WebSSH服务连接异常';
+                }
+            } catch (error) {
+                document.getElementById('connectionStatus').innerHTML = 
+                    '<strong>状态：</strong>无法连接到WebSSH服务(localhost:8899)，请确保服务已启动';
+            }
+        }
+
+        // 发送用户请求
+        async function sendUserRequest() {
+            const sessionId = document.getElementById('sessionId').value.trim();
+            const userMessage = document.getElementById('userMessage').value.trim();
+
+            if (!sessionId || !userMessage) {
+                alert('请填写会话ID和用户消息');
+                return;
+            }
+
+            const requestData = {
+                session_id: sessionId,
+                user_message: userMessage,
+                message_type: 'user_request'
+            };
+
+            addResponse('用户请求', userMessage, 'info');
+
+            try {
+                const response = await fetch('http://localhost:8899/api/ai/interactive', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer test' // 需要实际的JWT token
+                    },
+                    body: JSON.stringify(requestData)
+                });
+
+                const result = await response.json();
+                handleResponse(result, 'AI响应');
+
+                if (result.code === 0 && result.data.session_status === 'waiting_execution') {
+                    waitingExecution = true;
+                    currentCommandId = result.data.command_id;
+                    document.getElementById('feedbackBtn').disabled = false;
+                    document.getElementById('sendBtn').disabled = true;
+                    addResponse('系统提示', '🔶 AI已生成命令建议，等待执行结果反馈', 'waiting');
+                }
+            } catch (error) {
+                addResponse('错误', `请求失败: ${error.message}`, 'error');
+            }
+        }
+
+        // 发送执行结果
+        async function sendExecutionResult() {
+            const sessionId = document.getElementById('sessionId').value.trim();
+            const executionResult = document.getElementById('executionResult').value.trim();
+
+            if (!sessionId || !executionResult || !currentCommandId) {
+                alert('请填写会话ID和执行结果');
+                return;
+            }
+
+            // 简单解析执行结果
+            const success = /成功|完成|success|ok|正常|done/i.test(executionResult);
+            
+            const requestData = {
+                session_id: sessionId,
+                user_message: executionResult,
+                message_type: 'execution_result',
+                execution_info: {
+                    command_id: currentCommandId,
+                    success: success,
+                    output: success ? executionResult : '',
+                    error: success ? '' : executionResult
+                }
+            };
+
+            addResponse('执行结果反馈', executionResult, 'info');
+
+            try {
+                const response = await fetch('http://localhost:8899/api/ai/interactive', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer test' // 需要实际的JWT token
+                    },
+                    body: JSON.stringify(requestData)
+                });
+
+                const result = await response.json();
+                handleResponse(result, 'AI分析响应');
+
+                if (result.code === 0) {
+                    const status = result.data.session_status;
+                    if (status === 'completed') {
+                        addResponse('系统提示', '✅ 会话已完成！', 'success');
+                        resetForm();
+                    } else if (status === 'waiting_execution') {
+                        currentCommandId = result.data.command_id;
+                        addResponse('系统提示', '🔶 AI提供了新的解决方案，请继续执行', 'waiting');
+                    } else if (status === 'failed') {
+                        addResponse('系统提示', '❌ 任务执行失败', 'error');
+                        resetForm();
+                    }
+                }
+            } catch (error) {
+                addResponse('错误', `请求失败: ${error.message}`, 'error');
+            }
+        }
+
+        // 处理响应
+        function handleResponse(result, title) {
+            if (result.code === 0) {
+                addResponse(title, JSON.stringify(result.data, null, 2), 'success');
+            } else {
+                addResponse(title, `错误: ${result.msg}`, 'error');
+            }
+        }
+
+        // 添加响应显示
+        function addResponse(title, content, type) {
+            const responsesDiv = document.getElementById('responses');
+            const responseDiv = document.createElement('div');
+            responseDiv.className = 'response';
+            
+            const time = new Date().toLocaleTimeString();
+            responseDiv.innerHTML = `
+                <h4>${title} (${time})</h4>
+                <pre>${content}</pre>
+            `;
+            
+            responsesDiv.appendChild(responseDiv);
+            responseDiv.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // 重置表单
+        function resetForm() {
+            waitingExecution = false;
+            currentCommandId = 0;
+            document.getElementById('feedbackBtn').disabled = true;
+            document.getElementById('sendBtn').disabled = false;
+            document.getElementById('userMessage').value = '';
+            document.getElementById('executionResult').value = '';
+        }
+
+        // 页面加载时检查连接
+        checkConnection();
+    </script>
+</body>
+</html> 
